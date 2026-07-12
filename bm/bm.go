@@ -5,7 +5,6 @@
 package bm
 
 import (
-	"context"
 	"encoding/json"
 	"net"
 	nethttp "net/http"
@@ -23,6 +22,9 @@ type Context struct {
 
 	// params 是从 URL 路径中提取的命名参数，如 /api/tokens/:token
 	params map[string]string
+
+	// values 存储通过 Set/Get 在 handler 链中传递的任意值
+	values map[string]any
 
 	// aborted 表示中间件链已被终止
 	aborted bool
@@ -129,17 +131,23 @@ func (c *Context) Next() {
 	}
 }
 
-// Set / Get 在 context 里存取任意值（通过 request context）
+// Set 在 handler 链中存储任意值，供后续 handler 通过 Get 取出。
+// 使用内部 map 存储，避免每次调用 request.WithContext 产生 GC 压力。
 func (c *Context) Set(key string, val any) {
-	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), contextKey(key), val))
+	if c.values == nil {
+		c.values = make(map[string]any)
+	}
+	c.values[key] = val
 }
 
+// Get 取出通过 Set 存入的值，key 不存在时返回 nil, false。
 func (c *Context) Get(key string) (any, bool) {
-	val := c.Request.Context().Value(contextKey(key))
-	return val, val != nil
+	if c.values == nil {
+		return nil, false
+	}
+	val, ok := c.values[key]
+	return val, ok
 }
-
-type contextKey string
 
 // ── Engine ────────────────────────────────────────────────────────────────
 

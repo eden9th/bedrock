@@ -16,17 +16,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eden9th/bedrock/internal/ctxkey"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
-
-// contextKey 用于从 context 取 trace_id，与 trace 包保持一致
-type contextKey struct{}
 
 // Level 日志级别
 type Level int
 
 const (
-	LevelDebug Level = iota
+	// LevelUnset 是零值，表示未显式设置级别，Init 遇到此值时不修改默认级别
+	LevelUnset Level = iota
+	LevelDebug
 	LevelInfo
 	LevelWarn
 	LevelError
@@ -77,7 +77,7 @@ func Init(cfg *Config) {
 	ws := []io.Writer{os.Stderr}
 
 	if cfg != nil {
-		if cfg.Level != 0 {
+		if cfg.Level != LevelUnset {
 			minLevel = cfg.Level
 		}
 		if cfg.FilePath != "" {
@@ -122,10 +122,10 @@ func write(ctx context.Context, level Level, format string, args ...any) {
 
 	msg := fmt.Sprintf(format, args...)
 
-	// 提取 trace_id
+	// 提取 trace_id，使用与 trace 包共享的 ctxkey.TraceID 确保能正确读到注入的值
 	traceID := ""
 	if ctx != nil {
-		if id, ok := ctx.Value(contextKey{}).(string); ok {
+		if id, ok := ctx.Value(ctxkey.TraceID).(string); ok {
 			traceID = id
 		}
 	}

@@ -38,7 +38,7 @@ func Init(dir string) error {
 	if err := watcher.Add(dir); err != nil {
 		return fmt.Errorf("conf: watch dir %s: %w", dir, err)
 	}
-	go watchLoop()
+	go watchLoop(watcher)
 	return nil
 }
 
@@ -76,10 +76,25 @@ func (v *Value) UnmarshalTOML(out any) error {
 	return nil
 }
 
-func watchLoop() {
+// safeSet 调用 s.Set(raw)，捕获 panic 和错误，均输出到 stderr。
+// 使用 fmt.Fprintf(os.Stderr) 而非 log 包，避免循环依赖。
+func safeSet(s Setter, filename, raw string) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "conf: setter panic for %s: %v\n", filename, r)
+		}
+	}()
+	if err := s.Set(raw); err != nil {
+		fmt.Fprintf(os.Stderr, "conf: setter error for %s: %v\n", filename, err)
+	}
+}
+
+// watchLoop 监听 w 上的文件系统事件，驱动热更新回调。
+// 接收局部 watcher 参数而非读取包级变量，避免并发写入时的 data race。
+func watchLoop(w *fsnotify.Watcher) {
 	for {
 		select {
-		case event, ok := <-watcher.Events:
+		case event, ok := <-w.Events:
 			if !ok {
 				return
 			}
@@ -95,15 +110,17 @@ func watchLoop() {
 			}
 			raw, err := os.ReadFile(event.Name)
 			if err != nil {
+				fmt.Fprintf(os.Stderr, "conf: read %s: %v\n", event.Name, err)
 				continue
 			}
 			for _, s := range setters {
-				_ = s.Set(string(raw))
+				safeSet(s, filename, string(raw))
 			}
-		case _, ok := <-watcher.Errors:
+		case err, ok := <-w.Errors:
 			if !ok {
 				return
 			}
+			fmt.Fprintf(os.Stderr, "conf: watcher error: %v\n", err)
 		}
 	}
 }

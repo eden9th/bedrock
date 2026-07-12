@@ -7,27 +7,26 @@ import (
 	"net/http"
 
 	"github.com/eden9th/bedrock/bm"
+	"github.com/eden9th/bedrock/internal/ctxkey"
 
 	"github.com/google/uuid"
 )
 
-type contextKey struct{}
-
 const HeaderName = "X-Trace-Id"
 
-// NewTraceID 生成一个新的 trace_id
+// NewTraceID 生成一个新的 trace_id（UUID v4）
 func NewTraceID() string {
 	return uuid.New().String()
 }
 
-// WithTraceID 将 trace_id 注入 context
+// WithTraceID 将 trace_id 注入 context，供 log 包自动提取
 func WithTraceID(ctx context.Context, traceID string) context.Context {
-	return context.WithValue(ctx, contextKey{}, traceID)
+	return context.WithValue(ctx, ctxkey.TraceID, traceID)
 }
 
 // GetTraceID 从 context 中取出 trace_id，不存在返回空字符串
 func GetTraceID(ctx context.Context) string {
-	if id, ok := ctx.Value(contextKey{}).(string); ok {
+	if id, ok := ctx.Value(ctxkey.TraceID).(string); ok {
 		return id
 	}
 	return ""
