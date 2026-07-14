@@ -5,6 +5,7 @@
 package xstrings
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -18,7 +19,7 @@ type Integer interface {
 //
 //	xstrings.Join([]int32{1, 2, 3}) → "1,2,3"
 func Join[E Integer](s []E) string {
-	return JoinFunc(s, func(e E) string { return strconv.Itoa(int(e)) })
+	return JoinFunc(s, func(e E) string { return fmt.Sprint(e) })
 }
 
 // JoinFunc 将切片按 conv 转换后用逗号连接。
@@ -43,8 +44,7 @@ func JoinFunc[E any](s []E, conv func(E) string) string {
 //	xstrings.Split[int32]("1,2,3") → []int32{1,2,3}, nil
 func Split[T Integer](origin string) ([]T, error) {
 	return SplitFunc[T](origin, func(s string) (T, error) {
-		i, err := strconv.Atoi(s)
-		return T(i), err
+		return parseInteger[T](s)
 	})
 }
 
@@ -104,13 +104,15 @@ func IsBlank(s string) bool {
 //
 //	xstrings.Truncate("hello world", 8, "...") → "hello..."
 func Truncate(s string, maxLen int, suffix string) string {
-	if maxLen < len(suffix) {
+	rs := []rune(s)
+	suffixRunes := []rune(suffix)
+	if maxLen < len(suffixRunes) {
 		panic("xstrings: maxLen < len(suffix)")
 	}
-	if len(s) <= maxLen {
+	if len(rs) <= maxLen {
 		return s
 	}
-	return s[:maxLen-len(suffix)] + suffix
+	return string(rs[:maxLen-len(suffixRunes)]) + suffix
 }
 
 // ─── 字符串填充工具 ──────────────────────────────────────────────────────────
@@ -147,4 +149,16 @@ func PadRight(s string, totalLen int, pad rune) string {
 		b.WriteRune(pad)
 	}
 	return b.String()
+}
+
+func parseInteger[T Integer](s string) (T, error) {
+	var zero T
+	switch any(zero).(type) {
+	case uint, uint8, uint16, uint32, uint64, uintptr:
+		u, err := strconv.ParseUint(s, 10, 64)
+		return T(u), err
+	default:
+		i, err := strconv.ParseInt(s, 10, 64)
+		return T(i), err
+	}
 }

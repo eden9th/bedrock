@@ -60,53 +60,75 @@ func WithEnvPrefix(prefix string) Option {
 
 // Init 初始化配置，从 dir 目录加载所有 TOML 文件
 func Init(dir string, opts ...Option) error {
-	mu.Lock()
-	defer mu.Unlock()
-
 	o := initOptions{}
 	for _, opt := range opts {
 		opt(&o)
 	}
-	envPrefix = o.envPrefix
 
-	confDir = dir
-	watchers = make(map[string][]Setter)
-
-	var err error
-	watcher, err = fsnotify.NewWatcher()
+	nextWatcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("conf: create watcher: %w", err)
 	}
-	if err := watcher.Add(dir); err != nil {
+	if err := nextWatcher.Add(dir); err != nil {
+		_ = nextWatcher.Close()
 		return fmt.Errorf("conf: watch dir %s: %w", dir, err)
 	}
-	go watchLoop(watcher)
+
+	mu.Lock()
+	oldWatcher := watcher
+	envPrefix = o.envPrefix
+	confDir = dir
+	watchers = make(map[string][]Setter)
+	watcher = nextWatcher
+	mu.Unlock()
+
+	if oldWatcher != nil {
+		_ = oldWatcher.Close()
+	}
+
+	go watchLoop(nextWatcher, o.envPrefix)
 	return nil
 }
 
 // Close 关闭文件监听
 func Close() {
-	if watcher != nil {
-		watcher.Close()
+	mu.Lock()
+	oldWatcher := watcher
+	confDir = ""
+	watchers = nil
+	watcher = nil
+	envPrefix = ""
+	mu.Unlock()
+
+	if oldWatcher != nil {
+		_ = oldWatcher.Close()
 	}
 }
 
 // Get 返回指定配置文件的 Value，用于 UnmarshalTOML
 func Get(filename string) *Value {
-	return &Value{path: filepath.Join(confDir, filename)}
+	mu.RLock()
+	dir := confDir
+	prefix := envPrefix
+	mu.RUnlock()
+	return &Value{path: filepath.Join(dir, filename), envPrefix: prefix}
 }
 
 // Watch 注册热更新回调，文件变更时调用 s.Set(rawText)
 func Watch(filename string, s Setter) error {
 	mu.Lock()
 	defer mu.Unlock()
+	if watchers == nil {
+		return fmt.Errorf("conf: Init must be called before Watch")
+	}
 	watchers[filename] = append(watchers[filename], s)
 	return nil
 }
 
 // Value 表示一个配置文件
 type Value struct {
-	path string
+	path      string
+	envPrefix string
 }
 
 // UnmarshalTOML 将配置文件内容解析到 v，环境变量自动覆盖。
@@ -124,8 +146,8 @@ func (v *Value) UnmarshalTOML(out any) error {
 	}
 
 	// 2. 将环境变量展开为嵌套 map，deep merge 覆盖 base
-	if envPrefix != "" {
-		overlay := envOverlayMap(envPrefix)
+	if v.envPrefix != "" {
+		overlay := envOverlayMap(v.envPrefix)
 		deepMerge(base, overlay)
 	}
 
@@ -297,7 +319,7 @@ func safeSet(s Setter, filename, raw string) {
 
 // watchLoop 监听 w 上的文件系统事件，驱动热更新回调。
 // 接收局部 watcher 参数而非读取包级变量，避免并发写入时的 data race。
-func watchLoop(w *fsnotify.Watcher) {
+func watchLoop(w *fsnotify.Watcher, prefix string) {
 	for {
 		select {
 		case event, ok := <-w.Events:
@@ -309,7 +331,11 @@ func watchLoop(w *fsnotify.Watcher) {
 			}
 			filename := filepath.Base(event.Name)
 			mu.RLock()
-			setters := watchers[filename]
+			if w != watcher {
+				mu.RUnlock()
+				return
+			}
+			setters := append([]Setter(nil), watchers[filename]...)
 			mu.RUnlock()
 			if len(setters) == 0 {
 				continue
@@ -322,10 +348,10 @@ func watchLoop(w *fsnotify.Watcher) {
 			rawStr := string(raw)
 
 			// 将环境变量 deep merge 后重新编码为 TOML 文本传给 Setter
-			if envPrefix != "" {
+			if prefix != "" {
 				base := make(map[string]any)
 				if _, err := toml.Decode(rawStr, &base); err == nil {
-					overlay := envOverlayMap(envPrefix)
+					overlay := envOverlayMap(prefix)
 					deepMerge(base, overlay)
 					var buf bytes.Buffer
 					if err := toml.NewEncoder(&buf).Encode(base); err == nil {

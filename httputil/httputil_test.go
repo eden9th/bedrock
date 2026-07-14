@@ -133,3 +133,51 @@ func TestBind_InvalidJSON_Returns400(t *testing.T) {
 		t.Fatalf("expected 400 for invalid JSON, got %d", w.Code)
 	}
 }
+
+func TestBind_TrailingJSON_Returns400(t *testing.T) {
+	type Req struct {
+		Name string `json:"name"`
+	}
+
+	e := bm.New()
+	e.POST("/bind", func(c *bm.Context) {
+		var r Req
+		if !httputil.Bind(c, &r) {
+			return
+		}
+		c.String(200, "should not reach")
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/bind", strings.NewReader(`{"name":"a"}{"name":"b"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for trailing JSON, got %d", w.Code)
+	}
+}
+
+func TestBindWithLimit_TooLarge_Returns413(t *testing.T) {
+	type Req struct {
+		Name string `json:"name"`
+	}
+
+	e := bm.New()
+	e.POST("/bind", func(c *bm.Context) {
+		var r Req
+		if !httputil.BindWithLimit(c, &r, 8) {
+			return
+		}
+		c.String(200, "should not reach")
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/bind", strings.NewReader(`{"name":"alice"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for large body, got %d", w.Code)
+	}
+}

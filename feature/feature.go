@@ -36,6 +36,7 @@
 package feature
 
 import (
+	"strconv"
 	"sync"
 )
 
@@ -79,30 +80,9 @@ func (f *Flags) EnabledFor(flag string, key string) bool {
 		return false
 	}
 
-	// 解析为百分比
-	var pct float64
-	for _, c := range v {
-		if c == '.' {
-			continue
-		}
-		if c >= '0' && c <= '9' {
-			pct = pct*10 + float64(c-'0')
-		}
-	}
-	// 按位数还原：0.1 → 10%, 0.25 → 25%
-	digits := 0
-	dotFound := false
-	for _, c := range v {
-		if c == '.' {
-			dotFound = true
-			continue
-		}
-		if dotFound {
-			digits++
-		}
-	}
-	for i := 0; i < digits; i++ {
-		pct /= 10
+	pct, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return false
 	}
 
 	if pct <= 0 {
@@ -116,6 +96,9 @@ func (f *Flags) EnabledFor(flag string, key string) bool {
 }
 
 func (f *Flags) get(flag string) string {
+	if f == nil || f.provider == nil {
+		return ""
+	}
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	return f.provider.Get(flag)

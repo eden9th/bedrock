@@ -219,6 +219,12 @@ func Transact(ctx context.Context, db *sql.DB, fn func(tx *sql.Tx) error) error 
 	if err != nil {
 		return fmt.Errorf("db: begin tx: %w", err)
 	}
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback()
+			panic(p)
+		}
+	}()
 
 	if err := fn(tx); err != nil {
 		_ = tx.Rollback()
@@ -276,11 +282,11 @@ func (h *HealthChecker) Stats() sql.DBStats {
 
 // StatsMetrics 将连接池统计写入 Gauge 指标（需配合 monitor 包使用）。
 type StatsMetrics struct {
-	MaxOpenConnections int // 最大连接数
-	OpenConnections    int // 当前打开连接数
-	InUse              int // 正在使用中的连接数
-	Idle               int // 空闲连接数
-	WaitCount          int // 等待连接的请求数
+	MaxOpenConnections int           // 最大连接数
+	OpenConnections    int           // 当前打开连接数
+	InUse              int           // 正在使用中的连接数
+	Idle               int           // 空闲连接数
+	WaitCount          int           // 等待连接的请求数
 	WaitDuration       time.Duration // 总等待时间
 }
 

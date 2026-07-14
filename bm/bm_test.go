@@ -268,3 +268,26 @@ func TestConcurrentRouteRegistration_NoRace(t *testing.T) {
 		t.Fatalf("expected 200 after concurrent registration, got %d", w.Code)
 	}
 }
+
+func TestCORS_PreflightForRegisteredPath(t *testing.T) {
+	e := bm.New()
+	e.Use(bm.CORS(bm.CORSConfig{
+		AllowOrigins: []string{"https://example.com"},
+		AllowMethods: []string{"GET", "POST", "OPTIONS"},
+		AllowHeaders: []string{"Content-Type"},
+	}))
+	e.GET("/hello", func(c *bm.Context) { c.String(200, "ok") })
+
+	req := httptest.NewRequest(http.MethodOptions, "/hello", nil)
+	req.Header.Set("Origin", "https://example.com")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", w.Code)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://example.com" {
+		t.Fatalf("expected reflected origin, got %q", got)
+	}
+}

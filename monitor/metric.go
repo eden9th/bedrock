@@ -56,12 +56,12 @@ type Metric interface {
 // 对于 Counter / Gauge，Value 字段有效。
 // 对于 Histogram，Values 字段包含 bucket 累计值，末尾追加 +Inf bucket（总数）。
 type MetricSample struct {
-	Labels   map[string]string // label key → value，无 label 时为空 map
-	Value    float64           // Counter / Gauge 的值
-	Values   []float64         // Histogram 的各 bucket 累计计数
-	Sum      float64           // Histogram 的观测值总和
-	Count    uint64            // Histogram 的观测次数
-	Buckets  []float64         // Histogram 的 bucket 边界（拷贝，方便消费方）
+	Labels  map[string]string // label key → value，无 label 时为空 map
+	Value   float64           // Counter / Gauge 的值
+	Values  []float64         // Histogram 的各 bucket 累计计数
+	Sum     float64           // Histogram 的观测值总和
+	Count   uint64            // Histogram 的观测次数
+	Buckets []float64         // Histogram 的 bucket 边界（拷贝，方便消费方）
 }
 
 // ─── Counter ─────────────────────────────────────────────────────────────────
@@ -96,14 +96,14 @@ func NewCounter(name, help string, labels []string) *Counter {
 	}
 }
 
-func (c *Counter) Name() string              { return c.name }
-func (c *Counter) Help() string              { return c.help }
-func (c *Counter) Type() string              { return "counter" }
-func (c *Counter) Labels() []string          { return c.labels }
+func (c *Counter) Name() string     { return c.name }
+func (c *Counter) Help() string     { return c.help }
+func (c *Counter) Type() string     { return "counter" }
+func (c *Counter) Labels() []string { return c.labels }
 
 // Inc 将指定 label 组合的 Counter 值 +1。
 // values 必须与创建时的 labels 一一对应，数量不匹配会 panic。
-func (c *Counter) Inc(values ...string) { c.Add(1, c.prependDefaults(values)...) }
+func (c *Counter) Inc(values ...string) { c.Add(1, values...) }
 
 // Add 将指定 label 组合的 Counter 值 +delta（delta 必须 >= 0）。
 func (c *Counter) Add(delta float64, values ...string) {
@@ -140,16 +140,7 @@ func (c *Counter) Value(values ...string) uint64 {
 
 // prependDefaults 将 DefaultLabels 的值按 key 顺序插到 values 前面。
 func (c *Counter) prependDefaults(values []string) []string {
-	if len(c.DefaultLabels) == 0 {
-		return values
-	}
-	n := len(c.DefaultLabels)
-	all := make([]string, 0, n+len(values))
-	for _, k := range c.Labels()[:n] {
-		all = append(all, c.DefaultLabels[k])
-	}
-	all = append(all, values...)
-	return all
+	return prependDefaultLabels(c.labels, c.DefaultLabels, values)
 }
 
 // Snapshot 返回 Counter 的所有 label 组合的快照。
@@ -194,10 +185,10 @@ func NewGauge(name, help string, labels []string) *Gauge {
 	}
 }
 
-func (g *Gauge) Name() string              { return g.name }
-func (g *Gauge) Help() string              { return g.help }
-func (g *Gauge) Type() string              { return "gauge" }
-func (g *Gauge) Labels() []string          { return g.labels }
+func (g *Gauge) Name() string     { return g.name }
+func (g *Gauge) Help() string     { return g.help }
+func (g *Gauge) Type() string     { return "gauge" }
+func (g *Gauge) Labels() []string { return g.labels }
 
 // Set 将指定 label 组合的 Gauge 值设为 val。
 func (g *Gauge) Set(val float64, values ...string) {
@@ -235,16 +226,7 @@ func (g *Gauge) Value(values ...string) float64 {
 
 // prependDefaults 将 DefaultLabels 的值按 key 顺序插到 values 前面。
 func (g *Gauge) prependDefaults(values []string) []string {
-	if len(g.DefaultLabels) == 0 {
-		return values
-	}
-	n := len(g.DefaultLabels)
-	all := make([]string, 0, n+len(values))
-	for _, k := range g.Labels()[:n] {
-		all = append(all, g.DefaultLabels[k])
-	}
-	all = append(all, values...)
-	return all
+	return prependDefaultLabels(g.labels, g.DefaultLabels, values)
 }
 
 // Snapshot 返回 Gauge 的所有 label 组合的快照。
@@ -349,16 +331,7 @@ func (h *Histogram) observeLocked(key string, val float64) {
 
 // prependDefaults 将 DefaultLabels 的值按 key 顺序插到 values 前面。
 func (h *Histogram) prependDefaults(values []string) []string {
-	if len(h.DefaultLabels) == 0 {
-		return values
-	}
-	n := len(h.DefaultLabels)
-	all := make([]string, 0, n+len(values))
-	for _, k := range h.Labels()[:n] {
-		all = append(all, h.DefaultLabels[k])
-	}
-	all = append(all, values...)
-	return all
+	return prependDefaultLabels(h.labels, h.DefaultLabels, values)
 }
 
 // Snapshot 返回 Histogram 的所有 label 组合的快照。
@@ -400,6 +373,28 @@ func copyLabels(labels []string) []string {
 	out := make([]string, len(labels))
 	copy(out, labels)
 	return out
+}
+
+func prependDefaultLabels(labels []string, defaults map[string]string, values []string) []string {
+	if len(defaults) == 0 {
+		return values
+	}
+	all := make([]string, 0, len(labels))
+	valueIdx := 0
+	for _, label := range labels {
+		if v, ok := defaults[label]; ok {
+			all = append(all, v)
+			continue
+		}
+		if valueIdx < len(values) {
+			all = append(all, values[valueIdx])
+			valueIdx++
+		}
+	}
+	if valueIdx < len(values) {
+		all = append(all, values[valueIdx:]...)
+	}
+	return all
 }
 
 // splitLabels 将 labelKey 解析回 map[string]string

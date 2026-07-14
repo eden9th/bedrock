@@ -45,7 +45,7 @@ type HealthChecker interface {
 //	result := hr.CheckAll(context.Background())
 //	fmt.Println(result.Healthy) // true/false
 type HealthRegistry struct {
-	mu      sync.RWMutex
+	mu       sync.RWMutex
 	checkers map[string]HealthChecker
 }
 
@@ -91,8 +91,8 @@ func (hr *HealthRegistry) CheckAll(ctx context.Context) HealthResult {
 	}
 
 	type checkResult struct {
-		name   string
-		err    error
+		name    string
+		err     error
 		elapsed time.Duration
 	}
 
@@ -154,7 +154,7 @@ func (hr *HealthRegistry) CheckAll(ctx context.Context) HealthResult {
 
 // HealthResult 是 CheckAll 的聚合返回结果。
 type HealthResult struct {
-	Healthy bool                        // 全部健康为 true
+	Healthy bool                         // 全部健康为 true
 	Checks  map[string]HealthCheckResult // name → 各检查结果
 }
 

@@ -63,7 +63,16 @@ func CORSAllowAll() CORSConfig {
 //	e.Use(bm.CORS(bm.DefaultCORS()))     // 所有路由
 //	api := e.Group("/api", bm.CORS(bm.DefaultCORS()))
 func CORS(cfg CORSConfig) HandlerFunc {
-	allowOrigin := strings.Join(cfg.AllowOrigins, ", ")
+	if len(cfg.AllowMethods) == 0 {
+		cfg.AllowMethods = []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}
+	}
+	if len(cfg.AllowHeaders) == 0 {
+		cfg.AllowHeaders = []string{"Origin", "Content-Type", "Authorization"}
+	}
+	if cfg.MaxAge <= 0 {
+		cfg.MaxAge = 3600
+	}
+
 	allowMethods := strings.Join(cfg.AllowMethods, ", ")
 	allowHeaders := strings.Join(cfg.AllowHeaders, ", ")
 	exposeHeaders := strings.Join(cfg.ExposeHeaders, ", ")
@@ -76,21 +85,33 @@ func CORS(cfg CORSConfig) HandlerFunc {
 			return
 		}
 
-		// 设置通用 CORS 头
+		allowOrigin := allowedOrigin(cfg.AllowOrigins, origin, cfg.AllowCredentials)
+		if allowOrigin == "" {
+			if c.Request.Method == http.MethodOptions {
+				c.AbortWithStatus(http.StatusForbidden)
+				return
+			}
+			c.Next()
+			return
+		}
+
+		c.Header("Vary", "Origin")
+		c.Header("Access-Control-Allow-Origin", allowOrigin)
+
 		if cfg.AllowCredentials {
 			c.Header("Access-Control-Allow-Credentials", "true")
-			// AllowCredentials 时不能使用通配符，必须反射具体的 Origin
-			if cfg.AllowOrigins[0] == "*" {
-				c.Header("Access-Control-Allow-Origin", origin)
-			} else {
-				c.Header("Access-Control-Allow-Origin", matchOrigin(cfg.AllowOrigins, origin))
-			}
-		} else {
-			c.Header("Access-Control-Allow-Origin", allowOrigin)
 		}
 
 		c.Header("Access-Control-Allow-Methods", allowMethods)
-		c.Header("Access-Control-Allow-Headers", allowHeaders)
+		if len(cfg.AllowHeaders) == 1 && cfg.AllowHeaders[0] == "*" {
+			if requested := c.GetHeader("Access-Control-Request-Headers"); requested != "" {
+				c.Header("Access-Control-Allow-Headers", requested)
+			} else {
+				c.Header("Access-Control-Allow-Headers", "*")
+			}
+		} else {
+			c.Header("Access-Control-Allow-Headers", allowHeaders)
+		}
 		c.Header("Access-Control-Max-Age", maxAge)
 
 		if len(cfg.ExposeHeaders) > 0 {
@@ -108,10 +129,16 @@ func CORS(cfg CORSConfig) HandlerFunc {
 	}
 }
 
-// matchOrigin 检查 origin 是否在允许列表中。是则返回 origin，否则返回空字符串。
-func matchOrigin(allowed []string, origin string) string {
+// allowedOrigin 检查 origin 是否在允许列表中。返回应写入响应头的 Origin 值。
+func allowedOrigin(allowed []string, origin string, credentials bool) string {
 	for _, a := range allowed {
-		if a == "*" || strings.EqualFold(a, origin) {
+		if a == "*" {
+			if credentials {
+				return origin
+			}
+			return "*"
+		}
+		if strings.EqualFold(a, origin) {
 			return origin
 		}
 	}

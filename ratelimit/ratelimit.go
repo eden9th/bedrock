@@ -34,20 +34,24 @@ package ratelimit
 
 import (
 	"context"
+	"errors"
 	"math"
 	"sync"
 	"time"
 )
+
+// ErrExceedsBurst 表示一次请求的令牌数超过桶容量，等待也无法满足。
+var ErrExceedsBurst = errors.New("ratelimit: requested tokens exceed burst")
 
 // Limiter 是令牌桶限流器。并发安全。
 // 零值不可用，使用 New 创建。
 type Limiter struct {
 	mu sync.Mutex
 
-	rate  float64   // 令牌生成速率（个/秒）
-	burst float64   // 桶容量上限
-	tokens float64  // 当前令牌数
-	last  time.Time // 上次补充令牌的时间
+	rate   float64   // 令牌生成速率（个/秒）
+	burst  float64   // 桶容量上限
+	tokens float64   // 当前令牌数
+	last   time.Time // 上次补充令牌的时间
 }
 
 // New 创建令牌桶限流器。
@@ -57,10 +61,19 @@ type Limiter struct {
 //
 // burst 应 >= 1。rate 和 burst 都会被取 math.Ceil 向上取整。
 func New(rate, burst float64) *Limiter {
+	rate = math.Ceil(rate)
+	if rate <= 0 {
+		rate = 1
+	}
+	burst = math.Ceil(burst)
+	if burst <= 0 {
+		burst = 1
+	}
 	return &Limiter{
-		rate:  math.Ceil(rate),
-		burst: math.Ceil(burst),
-		last:  time.Now(),
+		rate:   rate,
+		burst:  burst,
+		tokens: burst,
+		last:   time.Now(),
 	}
 }
 
@@ -72,6 +85,9 @@ func (l *Limiter) Allow() bool {
 
 // AllowN 非阻塞地尝试获取 n 个令牌。
 func (l *Limiter) AllowN(n float64) bool {
+	if n <= 0 {
+		return true
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -91,6 +107,12 @@ func (l *Limiter) Wait(ctx context.Context) error {
 
 // WaitN 阻塞等待直到获取 n 个令牌或 context 取消。
 func (l *Limiter) WaitN(ctx context.Context, n float64) error {
+	if n <= 0 {
+		return nil
+	}
+	if n > l.burst {
+		return ErrExceedsBurst
+	}
 	for {
 		if l.AllowN(n) {
 			return nil
@@ -179,9 +201,20 @@ type bucket struct {
 //	burst: 每个 key 的桶容量
 //	ttl:   key 未被使用后的过期时间。过期后自动从内存中清理。
 func NewKeyLimiter(rate, burst float64, ttl time.Duration) *KeyLimiter {
+	rate = math.Ceil(rate)
+	if rate <= 0 {
+		rate = 1
+	}
+	burst = math.Ceil(burst)
+	if burst <= 0 {
+		burst = 1
+	}
+	if ttl <= 0 {
+		ttl = time.Minute
+	}
 	kl := &KeyLimiter{
-		rate:    math.Ceil(rate),
-		burst:   math.Ceil(burst),
+		rate:    rate,
+		burst:   burst,
 		ttl:     ttl,
 		buckets: make(map[string]*bucket),
 		done:    make(chan struct{}),

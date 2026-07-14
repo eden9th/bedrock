@@ -103,6 +103,9 @@ func ensureTable(ctx context.Context, db *sql.DB) error {
 func listSQLFiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	var files []string
@@ -120,8 +123,7 @@ func listSQLFiles(dir string) ([]string, error) {
 func getExecuted(ctx context.Context, db *sql.DB) (map[string]bool, error) {
 	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT version FROM %s", migrationTable))
 	if err != nil {
-		// 表不存在时不算错误
-		return map[string]bool{}, nil
+		return nil, err
 	}
 	defer rows.Close()
 

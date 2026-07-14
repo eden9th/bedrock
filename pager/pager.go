@@ -15,17 +15,17 @@ package pager
 //	begin, end = pager.GetPager(int32(len(items)), 4, 2)    → (4, 5)
 //	begin, end = pager.GetPager(int32(len(items)), 5, 2)    → (0, 0) 尾页越界
 func GetPager(length, offset, limit int32) (begin, end int32) {
-	begin = offset
-	end = begin + limit
-
-	if end > length {
-		end = length
+	if length <= 0 || offset < 0 || limit <= 0 || offset >= length {
+		return 0, 0
 	}
 
-	if begin < 0 || begin >= length || end < 0 {
-		begin, end = 0, 0
+	begin = offset
+	if limit > length-begin {
+		end = length
 		return
 	}
+
+	end = begin + limit
 
 	return
 }

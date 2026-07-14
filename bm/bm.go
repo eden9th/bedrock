@@ -5,9 +5,11 @@
 package bm
 
 import (
-	"encoding/json"
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	nethttp "net/http"
 	"os"
@@ -48,6 +50,65 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 // unwrap 返回原始的 ResponseWriter（类型断言用）
 func (rw *responseWriter) Unwrap() nethttp.ResponseWriter {
 	return rw.ResponseWriter
+}
+
+func (rw *responseWriter) Flush() {
+	f, ok := rw.ResponseWriter.(nethttp.Flusher)
+	if !ok {
+		return
+	}
+	if !rw.wroteHeader {
+		rw.WriteHeader(nethttp.StatusOK)
+	}
+	f.Flush()
+}
+
+func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := rw.ResponseWriter.(nethttp.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("bm: underlying ResponseWriter does not implement http.Hijacker")
+	}
+	return h.Hijack()
+}
+
+func (rw *responseWriter) Push(target string, opts *nethttp.PushOptions) error {
+	p, ok := rw.ResponseWriter.(nethttp.Pusher)
+	if !ok {
+		return nethttp.ErrNotSupported
+	}
+	return p.Push(target, opts)
+}
+
+func (rw *responseWriter) ReadFrom(r io.Reader) (int64, error) {
+	if !rw.wroteHeader {
+		rw.WriteHeader(nethttp.StatusOK)
+	}
+	if rf, ok := rw.ResponseWriter.(io.ReaderFrom); ok {
+		n, err := rf.ReadFrom(r)
+		rw.bytesWritten += int(n)
+		return n, err
+	}
+	var written int64
+	buf := make([]byte, 32*1024)
+	for {
+		nr, er := r.Read(buf)
+		if nr > 0 {
+			nw, ew := rw.Write(buf[:nr])
+			written += int64(nw)
+			if ew != nil {
+				return written, ew
+			}
+			if nw != nr {
+				return written, io.ErrShortWrite
+			}
+		}
+		if er == io.EOF {
+			return written, nil
+		}
+		if er != nil {
+			return written, er
+		}
+	}
 }
 
 // HandlerFunc 是 bm handler 函数签名，与 blademaster 一致
@@ -311,6 +372,8 @@ func (e *Engine) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 	method := r.Method
 
 	methodMismatch := false
+	var mismatchParams map[string]string
+	var mismatchPattern string
 	for _, route := range routes {
 		params, ok := matchRoute(route.segments, path)
 		if !ok {
@@ -318,6 +381,10 @@ func (e *Engine) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 		}
 		if route.method != method {
 			methodMismatch = true
+			if mismatchPattern == "" {
+				mismatchParams = params
+				mismatchPattern = route.pattern
+			}
 			continue
 		}
 		// 构建 handler 链：全局中间件 + 路由 handlers
@@ -336,12 +403,32 @@ func (e *Engine) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 
 		// 追踪在途请求，用于优雅关闭时等待完成
 		e.inflight.Add(1)
+		defer e.inflight.Done()
 		c.Next()
-		e.inflight.Done()
 		return
 	}
 
 	if methodMismatch {
+		if method == nethttp.MethodOptions {
+			chain := make([]HandlerFunc, 0, len(e.middleware)+1)
+			chain = append(chain, e.middleware...)
+			chain = append(chain, func(c *Context) {
+				c.Writer.WriteHeader(nethttp.StatusNoContent)
+			})
+
+			c := &Context{
+				Writer:   rw,
+				Request:  r,
+				params:   mismatchParams,
+				pattern:  mismatchPattern,
+				index:    -1,
+				handlers: chain,
+			}
+			e.inflight.Add(1)
+			defer e.inflight.Done()
+			c.Next()
+			return
+		}
 		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 		rw.WriteHeader(nethttp.StatusMethodNotAllowed)
 		json.NewEncoder(rw).Encode(map[string]string{"detail": nethttp.StatusText(nethttp.StatusMethodNotAllowed)})

@@ -82,8 +82,8 @@ var (
 	minLevel = LevelInfo
 
 	// 采样状态：按调用位置聚合，避免动态消息产生无限桶
-	samplingCfg  *SamplingConfig
-	samplingMap  sync.Map // map[string]*sampleBucket, key = "file:line"
+	samplingCfg *SamplingConfig
+	samplingMap sync.Map // map[string]*sampleBucket, key = "file:line"
 )
 
 type sampleBucket struct {

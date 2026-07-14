@@ -201,9 +201,14 @@ func TestPauseBlocksAutoScheduled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer stopCancel()
+		_ = s.Stop(stopCtx)
+	}()
 
 	go func() { _ = s.Start(ctx) }()
-	time.Sleep(150 * time.Millisecond)
+	waitUntil(t, time.Second, func() bool { return job.count.Load() > 0 })
 
 	s.Pause()
 	countBeforePause := job.count.Load()
@@ -215,11 +220,7 @@ func TestPauseBlocksAutoScheduled(t *testing.T) {
 	}
 
 	s.Resume()
-	time.Sleep(300 * time.Millisecond)
-
-	if job.count.Load() <= countBeforePause {
-		t.Fatal("auto job after resume: count should increase")
-	}
+	waitUntil(t, time.Second, func() bool { return job.count.Load() > countBeforePause })
 }
 
 // ----- lifecycle Start/Stop -----
@@ -263,4 +264,16 @@ func TestName(t *testing.T) {
 	if s.Name() != "cron-scheduler" {
 		t.Fatalf("want Name=cron-scheduler, got %s", s.Name())
 	}
+}
+
+func waitUntil(t *testing.T, timeout time.Duration, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition was not met before timeout")
 }

@@ -5,6 +5,7 @@ package httputil
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 
@@ -38,12 +39,29 @@ func Bind[T any](c *bm.Context, v *T) bool {
 // BindWithLimit 将请求体 JSON 解析到 v，指定最大 body 字节数。
 // maxBytes 为 0 时不限制大小（仅用于信任的内部接口）。
 func BindWithLimit[T any](c *bm.Context, v *T, maxBytes int64) bool {
-	var reader io.Reader = c.Request.Body
+	var reader io.Reader
 	if maxBytes > 0 {
-		reader = io.LimitReader(c.Request.Body, maxBytes)
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
 	}
-	if err := json.NewDecoder(reader).Decode(v); err != nil {
-		if maxBytes > 0 && isSizeExceeded(err) {
+	reader = c.Request.Body
+	decoder := json.NewDecoder(reader)
+	if err := decoder.Decode(v); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			JSONError(c, http.StatusRequestEntityTooLarge, "request body too large")
+			return false
+		}
+		JSONError(c, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			JSONError(c, http.StatusBadRequest, "invalid request body: multiple JSON values")
+			return false
+		}
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
 			JSONError(c, http.StatusRequestEntityTooLarge, "request body too large")
 			return false
 		}
@@ -89,9 +107,3 @@ func BindAndValidate[T any](c *bm.Context, v *T, validate func(T) []FieldError) 
 }
 
 // isSizeExceeded 判断是否为 io.LimitReader 触达上限导致的错误。
-func isSizeExceeded(err error) bool {
-	// io.LimitReader 达到上限后返回 "unexpected EOF"。
-	// json.Decoder 在截断的 JSON 上解析时产生此错误。
-	// 返回值语义与 syntex error 相同，通过消息特征区分。
-	return err != nil && (err.Error() == "unexpected EOF" || err.Error() == "unexpected end of JSON input")
-}

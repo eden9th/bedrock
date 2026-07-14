@@ -33,6 +33,7 @@ type Config struct {
 type App struct {
 	name     string
 	confDir  string
+	delay    time.Duration
 	timeout  time.Duration
 	stoppers []stopper
 }
@@ -51,6 +52,7 @@ func New(cfg Config) *App {
 	return &App{
 		name:    cfg.Name,
 		confDir: cfg.ConfDir,
+		delay:   cfg.ShutdownDelay,
 		timeout: timeout,
 	}
 }
@@ -71,6 +73,9 @@ func (a *App) Run() {
 
 	s := <-c
 	fmt.Fprintf(os.Stderr, "[%s] received signal %s, shutting down...\n", a.name, s)
+	if a.delay > 0 {
+		time.Sleep(a.delay)
+	}
 
 	// 逆序关闭
 	for i := len(a.stoppers) - 1; i >= 0; i-- {

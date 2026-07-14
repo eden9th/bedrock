@@ -1,7 +1,7 @@
 package bm
 
 import (
-	"fmt"
+	"encoding/json"
 	"os"
 	"time"
 )
@@ -28,10 +28,22 @@ func Logger() HandlerFunc {
 		status := c.WriterStatus()
 		bytes := c.BytesWritten()
 
-		fmt.Fprintf(os.Stderr,
-			`{"time":"%s","method":"%s","path":"%s","status":%d,"duration_ms":%.2f,"bytes":%d}`+"\n",
-			start.Format("2006/01/02-15:04:05.000"),
-			method, path, status, duration, bytes,
-		)
+		_ = json.NewEncoder(os.Stderr).Encode(accessLog{
+			Time:       start.Format("2006/01/02-15:04:05.000"),
+			Method:     method,
+			Path:       path,
+			Status:     status,
+			DurationMS: duration,
+			Bytes:      bytes,
+		})
 	}
+}
+
+type accessLog struct {
+	Time       string  `json:"time"`
+	Method     string  `json:"method"`
+	Path       string  `json:"path"`
+	Status     int     `json:"status"`
+	DurationMS float64 `json:"duration_ms"`
+	Bytes      int     `json:"bytes"`
 }
