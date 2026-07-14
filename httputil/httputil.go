@@ -5,10 +5,14 @@ package httputil
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 
 	"github.com/eden9th/bedrock/bm"
 )
+
+// DefaultMaxBodySize 是 Bind 默认的最大请求体大小（1MB）。
+const DefaultMaxBodySize = 1 << 20
 
 // JSON 输出裸 JSON，不带任何包装层，HTTP 200。
 func JSON(c *bm.Context, data any) {
@@ -25,12 +29,69 @@ func JSONError(c *bm.Context, status int, detail string) {
 	c.Abort()
 }
 
-// Bind 将请求体 JSON 解析到 v。
+// Bind 将请求体 JSON 解析到 v，使用默认 1MB body 大小限制。
 // 解析失败时自动返回 400 并中止，返回 false 表示失败，handler 应直接 return。
 func Bind[T any](c *bm.Context, v *T) bool {
-	if err := json.NewDecoder(c.Request.Body).Decode(v); err != nil {
+	return BindWithLimit(c, v, DefaultMaxBodySize)
+}
+
+// BindWithLimit 将请求体 JSON 解析到 v，指定最大 body 字节数。
+// maxBytes 为 0 时不限制大小（仅用于信任的内部接口）。
+func BindWithLimit[T any](c *bm.Context, v *T, maxBytes int64) bool {
+	var reader io.Reader = c.Request.Body
+	if maxBytes > 0 {
+		reader = io.LimitReader(c.Request.Body, maxBytes)
+	}
+	if err := json.NewDecoder(reader).Decode(v); err != nil {
+		if maxBytes > 0 && isSizeExceeded(err) {
+			JSONError(c, http.StatusRequestEntityTooLarge, "request body too large")
+			return false
+		}
 		JSONError(c, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return false
 	}
 	return true
+}
+
+// FieldError 表示单个字段的校验错误。
+type FieldError struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
+
+// BindAndValidate 将请求体 JSON 解析到 v，然后执行校验函数。
+// 校验失败时返回 422，body 为 {"errors": [{"field":"name","message":"必填"}]}。
+//
+// 使用示例：
+//
+//	type Req struct { Name string `json:"name"` }
+//	var r Req
+//	if !httputil.BindAndValidate(c, &r, func(r Req) []httputil.FieldError {
+//	    var errs []httputil.FieldError
+//	    if r.Name == "" { errs = append(errs, httputil.FieldError{Field:"name",Message:"必填"}) }
+//	    return errs
+//	}) {
+//	    return
+//	}
+func BindAndValidate[T any](c *bm.Context, v *T, validate func(T) []FieldError) bool {
+	if !Bind(c, v) {
+		return false
+	}
+	errs := validate(*v)
+	if len(errs) > 0 {
+		c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+		c.Writer.WriteHeader(http.StatusUnprocessableEntity)
+		json.NewEncoder(c.Writer).Encode(map[string]any{"errors": errs})
+		c.Abort()
+		return false
+	}
+	return true
+}
+
+// isSizeExceeded 判断是否为 io.LimitReader 触达上限导致的错误。
+func isSizeExceeded(err error) bool {
+	// io.LimitReader 达到上限后返回 "unexpected EOF"。
+	// json.Decoder 在截断的 JSON 上解析时产生此错误。
+	// 返回值语义与 syntex error 相同，通过消息特征区分。
+	return err != nil && (err.Error() == "unexpected EOF" || err.Error() == "unexpected end of JSON input")
 }

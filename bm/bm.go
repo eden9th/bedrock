@@ -6,11 +6,49 @@ package bm
 
 import (
 	"encoding/json"
+	"context"
+	"fmt"
 	"net"
 	nethttp "net/http"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 )
+
+// responseWriter 包装 http.ResponseWriter，追踪写入的状态码和字节数。
+// 供中间件（如监控）在 handler 链结束后获取响应元数据。
+type responseWriter struct {
+	nethttp.ResponseWriter
+	status       int
+	bytesWritten int
+	wroteHeader  bool
+}
+
+func (rw *responseWriter) WriteHeader(status int) {
+	if rw.wroteHeader {
+		return
+	}
+	rw.status = status
+	rw.wroteHeader = true
+	rw.ResponseWriter.WriteHeader(status)
+}
+
+func (rw *responseWriter) Write(b []byte) (int, error) {
+	if !rw.wroteHeader {
+		rw.WriteHeader(nethttp.StatusOK)
+	}
+	n, err := rw.ResponseWriter.Write(b)
+	rw.bytesWritten += n
+	return n, err
+}
+
+// unwrap 返回原始的 ResponseWriter（类型断言用）
+func (rw *responseWriter) Unwrap() nethttp.ResponseWriter {
+	return rw.ResponseWriter
+}
 
 // HandlerFunc 是 bm handler 函数签名，与 blademaster 一致
 type HandlerFunc func(c *Context)
@@ -22,6 +60,10 @@ type Context struct {
 
 	// params 是从 URL 路径中提取的命名参数，如 /api/tokens/:token
 	params map[string]string
+
+	// pattern 是匹配到的路由注册时的原始 pattern，如 /api/tokens/:token
+	// 由 Engine.ServeHTTP 在匹配成功后写入，供中间件获取路由模板
+	pattern string
 
 	// values 存储通过 Set/Get 在 handler 链中传递的任意值
 	values map[string]any
@@ -37,6 +79,30 @@ type Context struct {
 // Param 取路径参数，如路由 /tokens/:token，Param("token") 返回对应值
 func (c *Context) Param(key string) string {
 	return c.params[key]
+}
+
+// Pattern 返回匹配到的路由注册时的原始 pattern，如 /api/users/:id。
+// 未匹配到路由时（如 404）返回空字符串。供监控中间件等场景获取路由模板。
+func (c *Context) Pattern() string {
+	return c.pattern
+}
+
+// WriterStatus 返回实际写入的 HTTP 状态码。
+// 在 handler 链执行期间调用时，返回当前已写入的状态码（由首个 WriteHeader 调用确定）。
+// handler 链执行完毕后调用时，返回最终状态码（默认 200）。
+func (c *Context) WriterStatus() int {
+	if rw, ok := c.Writer.(*responseWriter); ok && rw.wroteHeader {
+		return rw.status
+	}
+	return nethttp.StatusOK
+}
+
+// BytesWritten 返回已写入的响应字节数。
+func (c *Context) BytesWritten() int {
+	if rw, ok := c.Writer.(*responseWriter); ok {
+		return rw.bytesWritten
+	}
+	return 0
 }
 
 // Query 取 URL query 参数，等价于 c.Request.URL.Query().Get(key)
@@ -164,6 +230,9 @@ type Engine struct {
 	mu         sync.RWMutex
 	routes     []*route
 	middleware []HandlerFunc
+
+	// inflight 追踪正在处理中的请求，用于优雅关闭时等待请求完成
+	inflight sync.WaitGroup
 }
 
 // New 创建空 Engine
@@ -196,6 +265,21 @@ func (e *Engine) PUT(pattern string, handlers ...HandlerFunc) {
 	e.add("PUT", pattern, handlers...)
 }
 
+// PATCH 注册 PATCH 路由
+func (e *Engine) PATCH(pattern string, handlers ...HandlerFunc) {
+	e.add("PATCH", pattern, handlers...)
+}
+
+// OPTIONS 注册 OPTIONS 路由
+func (e *Engine) OPTIONS(pattern string, handlers ...HandlerFunc) {
+	e.add("OPTIONS", pattern, handlers...)
+}
+
+// HEAD 注册 HEAD 路由
+func (e *Engine) HEAD(pattern string, handlers ...HandlerFunc) {
+	e.add("HEAD", pattern, handlers...)
+}
+
 func (e *Engine) add(method, pattern string, handlers ...HandlerFunc) {
 	segs := splitPath(pattern)
 	r := &route{
@@ -220,6 +304,9 @@ func (e *Engine) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 	routes := e.routes
 	e.mu.RUnlock()
 
+	// 包装 ResponseWriter 以追踪状态码和字节数
+	rw := &responseWriter{ResponseWriter: w, status: nethttp.StatusOK}
+
 	path := r.URL.Path
 	method := r.Method
 
@@ -239,21 +326,30 @@ func (e *Engine) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 		chain = append(chain, route.handlers...)
 
 		c := &Context{
-			Writer:   w,
+			Writer:   rw,
 			Request:  r,
 			params:   params,
+			pattern:  route.pattern,
 			index:    -1,
 			handlers: chain,
 		}
+
+		// 追踪在途请求，用于优雅关闭时等待完成
+		e.inflight.Add(1)
 		c.Next()
+		e.inflight.Done()
 		return
 	}
 
 	if methodMismatch {
-		nethttp.Error(w, "Method Not Allowed", nethttp.StatusMethodNotAllowed)
+		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+		rw.WriteHeader(nethttp.StatusMethodNotAllowed)
+		json.NewEncoder(rw).Encode(map[string]string{"detail": nethttp.StatusText(nethttp.StatusMethodNotAllowed)})
 		return
 	}
-	nethttp.NotFound(w, r)
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	rw.WriteHeader(nethttp.StatusNotFound)
+	json.NewEncoder(rw).Encode(map[string]string{"detail": nethttp.StatusText(nethttp.StatusNotFound)})
 }
 
 // NewServer 创建绑定到 addr 的 http.Server
@@ -261,7 +357,8 @@ func (e *Engine) NewServer(addr string) *nethttp.Server {
 	return &nethttp.Server{Addr: addr, Handler: e}
 }
 
-// Start 在 addr 上监听并 serve（阻塞）
+// Start 在 addr 上监听并 serve（阻塞）。
+// 不会处理系统信号——如需优雅关闭，使用 StartWithShutdown。
 func (e *Engine) Start(addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -269,6 +366,72 @@ func (e *Engine) Start(addr string) error {
 	}
 	srv := e.NewServer(addr)
 	return srv.Serve(ln)
+}
+
+// Shutdown 优雅关闭服务器。
+// 1. 调用 srv.Shutdown(ctx) 停止接受新连接
+// 2. 等待所有在途请求处理完毕（由 inflight WaitGroup 追踪）
+// ctx 用于设置关闭超时。
+func (e *Engine) Shutdown(ctx context.Context) error {
+	// 等待在途请求完成，或 ctx 超时
+	done := make(chan struct{})
+	go func() {
+		e.inflight.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// StartWithShutdown 启动服务并处理系统信号，实现优雅关闭。
+//
+// 流程：
+//  1. 监听 addr 并启动 HTTP 服务（goroutine）
+//  2. 等待 SIGTERM / SIGINT 信号
+//  3. 收到信号后，创建 30s 超时 context，调用 Shutdown
+//  4. 返回 Shutdown 的结果
+//
+// 这是生产推荐的启动方式。
+func (e *Engine) StartWithShutdown(addr string) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+
+	srv := e.NewServer(addr)
+
+	// 启动 HTTP 服务
+	go func() {
+		if err := srv.Serve(ln); err != nil && err != nethttp.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "[bm] serve error: %v\n", err)
+		}
+	}()
+
+	// 等待信号
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-quit
+	fmt.Fprintf(os.Stderr, "[bm] received signal %v, shutting down...\n", sig)
+
+	// 先关闭 HTTP 服务器（停止接受新连接）
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		fmt.Fprintf(os.Stderr, "[bm] HTTP server shutdown error: %v\n", err)
+	}
+
+	// 再等待在途请求完成
+	if err := e.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // ── RouterGroup ───────────────────────────────────────────────────────────
@@ -294,6 +457,18 @@ func (g *RouterGroup) DELETE(path string, handlers ...HandlerFunc) {
 
 func (g *RouterGroup) PUT(path string, handlers ...HandlerFunc) {
 	g.engine.add("PUT", g.prefix+path, g.wrap(handlers...)...)
+}
+
+func (g *RouterGroup) PATCH(path string, handlers ...HandlerFunc) {
+	g.engine.add("PATCH", g.prefix+path, g.wrap(handlers...)...)
+}
+
+func (g *RouterGroup) OPTIONS(path string, handlers ...HandlerFunc) {
+	g.engine.add("OPTIONS", g.prefix+path, g.wrap(handlers...)...)
+}
+
+func (g *RouterGroup) HEAD(path string, handlers ...HandlerFunc) {
+	g.engine.add("HEAD", g.prefix+path, g.wrap(handlers...)...)
 }
 
 func (g *RouterGroup) Group(prefix string, middleware ...HandlerFunc) *RouterGroup {
