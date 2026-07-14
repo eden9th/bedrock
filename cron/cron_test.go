@@ -160,20 +160,20 @@ func TestRunTaskPanicRecover(t *testing.T) {
 
 func TestPauseResume(t *testing.T) {
 	s := cron.New()
-	job := &countJob{name: "pausable"}
-	_ = s.AddJob("@manual", job)
 
 	s.Pause()
 	if !s.IsPaused() {
 		t.Fatal("want IsPaused=true after Pause()")
 	}
 
-	// 暂停时 RunTask 应跳过执行（不报错，count 不变）
-	if err := s.RunTask(context.Background(), "pausable"); err != nil {
-		t.Fatalf("RunTask during pause should not error, got %v", err)
+	// 手动触发（RunTask）不受 PAUSED 限制：PAUSED 只阻断自动调度路径
+	manualJob := &countJob{name: "manual-during-pause"}
+	_ = s.AddJob("@manual", manualJob)
+	if err := s.RunTask(context.Background(), "manual-during-pause"); err != nil {
+		t.Fatalf("RunTask during pause should succeed (manual trigger bypasses PAUSED), got %v", err)
 	}
-	if job.count.Load() != 0 {
-		t.Fatalf("want count=0 while paused, got %d", job.count.Load())
+	if manualJob.count.Load() != 1 {
+		t.Fatalf("manual trigger during pause: want count=1, got %d", manualJob.count.Load())
 	}
 
 	s.Resume()
@@ -181,12 +181,44 @@ func TestPauseResume(t *testing.T) {
 		t.Fatal("want IsPaused=false after Resume()")
 	}
 
-	// 恢复后正常执行
-	if err := s.RunTask(context.Background(), "pausable"); err != nil {
+	// 恢复后手动触发同样正常
+	resumeJob := &countJob{name: "manual-after-resume"}
+	_ = s.AddJob("@manual", resumeJob)
+	if err := s.RunTask(context.Background(), "manual-after-resume"); err != nil {
 		t.Fatalf("RunTask after resume failed: %v", err)
 	}
-	if job.count.Load() != 1 {
-		t.Fatalf("want count=1 after resume, got %d", job.count.Load())
+	if resumeJob.count.Load() != 1 {
+		t.Fatalf("manual trigger after resume: want count=1, got %d", resumeJob.count.Load())
+	}
+}
+
+// TestPauseBlocksAutoScheduled 验证 PAUSED 只阻断自动调度路径（robfig/cron 触发）。
+// 手动触发（RunTask）不受影响——已在 TestPauseResume 中验证。
+func TestPauseBlocksAutoScheduled(t *testing.T) {
+	s := cron.New()
+	job := &countJob{name: "auto-paused"}
+	_ = s.AddJob("@every 100ms", job)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = s.Start(ctx) }()
+	time.Sleep(150 * time.Millisecond)
+
+	s.Pause()
+	countBeforePause := job.count.Load()
+	time.Sleep(300 * time.Millisecond)
+
+	// PAUSED 期间自动调度应跳过
+	if job.count.Load() != countBeforePause {
+		t.Fatalf("auto job during pause: count should not increase, was=%d now=%d", countBeforePause, job.count.Load())
+	}
+
+	s.Resume()
+	time.Sleep(300 * time.Millisecond)
+
+	if job.count.Load() <= countBeforePause {
+		t.Fatal("auto job after resume: count should increase")
 	}
 }
 

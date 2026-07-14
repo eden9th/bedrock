@@ -14,6 +14,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eden9th/bedrock/internal/ctxkey"
@@ -80,15 +81,15 @@ var (
 	writers  []io.Writer
 	minLevel = LevelInfo
 
-	// 采样状态
+	// 采样状态：按调用位置聚合，避免动态消息产生无限桶
 	samplingCfg  *SamplingConfig
-	samplingMu   sync.Mutex
-	samplingBuckets = make(map[string]*sampleBucket) // msg key → bucket
+	samplingMap  sync.Map // map[string]*sampleBucket, key = "file:line"
 )
 
 type sampleBucket struct {
-	count  int
+	count   atomic.Int64
 	resetAt time.Time
+	mu      sync.Mutex // 保护 resetAt
 }
 
 // Init 初始化日志，cfg 为 nil 时只输出到 stderr
@@ -102,9 +103,8 @@ func Init(cfg *Config) {
 		if cfg.Level != LevelUnset {
 			minLevel = cfg.Level
 		}
-		// 采样配置
+		// 采样配置（Init 仅在启动时调用一次，无需加锁）
 		if cfg.Sampling != nil {
-			samplingMu.Lock()
 			samplingCfg = cfg.Sampling
 			if samplingCfg.Window <= 0 {
 				samplingCfg.Window = time.Second
@@ -112,7 +112,6 @@ func Init(cfg *Config) {
 			if samplingCfg.MaxCount <= 0 {
 				samplingCfg.MaxCount = 10
 			}
-			samplingMu.Unlock()
 		}
 		if cfg.FilePath != "" {
 			maxSize := 200
@@ -144,24 +143,47 @@ func Init(cfg *Config) {
 // Close 关闭日志（lumberjack 不需要显式关闭，保留接口兼容）
 func Close() {}
 
-// sampleCheck 检查当前消息是否超过采样限制。返回 true 表示应跳过输出。
-func sampleCheck(msg string) bool {
-	samplingMu.Lock()
-	defer samplingMu.Unlock()
+// callerKey 返回调用位置的文件名和行号，格式 "file:line"，用于采样桶标识。
+func callerKey(skip int) string {
+	_, file, line, ok := runtime.Caller(skip)
+	if !ok {
+		return "unknown:0"
+	}
+	// 只保留最后两级路径，如 "log/log.go:245"
+	slashes := 0
+	for i := len(file) - 1; i > 0; i-- {
+		if file[i] == '/' {
+			slashes++
+			if slashes == 2 {
+				file = file[i+1:]
+				break
+			}
+		}
+	}
+	return fmt.Sprintf("%s:%d", file, line)
+}
 
+// sampleCheck 检查调用位置是否超过采样限制，返回 true 表示应跳过输出。
+// callerKey 应为调用位置标识（file:line），保证不同位置的采样独立。
+func sampleCheck(callerKey string) bool {
 	if samplingCfg == nil {
 		return false
 	}
 
 	now := time.Now()
-	b, ok := samplingBuckets[msg]
-	if !ok || now.After(b.resetAt) {
-		samplingBuckets[msg] = &sampleBucket{count: 1, resetAt: now.Add(samplingCfg.Window)}
+	val, _ := samplingMap.LoadOrStore(callerKey, &sampleBucket{})
+	b := val.(*sampleBucket)
+
+	b.mu.Lock()
+	if now.After(b.resetAt) {
+		b.resetAt = now.Add(samplingCfg.Window)
+		b.count.Store(1)
+		b.mu.Unlock()
 		return false
 	}
+	b.mu.Unlock()
 
-	if b.count < samplingCfg.MaxCount {
-		b.count++
+	if b.count.Add(1) <= int64(samplingCfg.MaxCount) {
 		return false
 	}
 	return true
@@ -177,7 +199,7 @@ func writev(ctx any, level Level, msg string, fields []Field) {
 	if level < lvl {
 		return
 	}
-	if sampleCheck(msg) {
+	if sampleCheck(callerKey(3)) {
 		return
 	}
 
@@ -237,10 +259,10 @@ func write(ctx context.Context, level Level, format string, args ...any) {
 		return
 	}
 
-	msg := fmt.Sprintf(format, args...)
-	if sampleCheck(msg) {
+	if sampleCheck(callerKey(3)) {
 		return
 	}
+	msg := fmt.Sprintf(format, args...)
 
 	// 提取 trace_id，使用与 trace 包共享的 ctxkey.TraceID 确保能正确读到注入的值
 	traceID := ""

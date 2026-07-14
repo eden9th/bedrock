@@ -4,6 +4,24 @@
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **app** — 全新包：统一应用生命周期管理（信号处理 + LIFO 优雅关闭 + RegisterStop），零外部依赖，纯标准库
+
+### Fixed
+
+- **log**: 采样锁从全局 Mutex 改为 `sync.Map` + `atomic.Int64`，采样 key 从消息内容改为调用位置（file:line），消除高并发锁竞争和动态消息无限桶问题
+- **trace**: Span.End() 从手动字符串拼接 JSON 改为 `encoding/json.Marshal`，消除非法 JSON 风险
+- **ratelimit**: KeyLimiter 新增 `Close()` 方法停止后台清理 goroutine，防止泄漏
+
+### Changed
+
+- **cron**: WithRunArgs / GetArg 通过 context 传递手动任务参数（替代全局变量）；PAUSED 开关从 runWithRecover 移至 wrap()，RunTask 不受 PAUSED 限制
+
+---
+
 ## [0.6.0] — 2026-07-14
 
 ### Added

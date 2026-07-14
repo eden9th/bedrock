@@ -25,11 +25,22 @@
 //	m.Register(s)
 //	m.Run()
 //
-// # 手动触发（用于 admin 接口）
+// # 手动触发（用于 admin 接口或 CLI）
 //
 //	entry, ok := s.Entry("hourly-cleanup")
 //	if ok {
 //	    entry.Job.Run(ctx)
+//	}
+//
+// # 手动触发并传参
+//
+//	ctx := cron.WithRunArgs(context.Background(), map[string]string{"name": "chaos"})
+//	s.RunTask(ctx, "greet")
+//
+//	// 任务内读取参数
+//	func(ctx context.Context) error {
+//	    name := cron.GetArg(ctx, "name")  // "chaos"
+//	    ...
 //	}
 package cron
 
@@ -70,4 +81,24 @@ type EntryInfo struct {
 	Prev time.Time
 	// job 用于手动触发时调用，不导出。
 	job Job
+}
+
+// ── 手动任务参数传递 ──
+
+type runArgsKey struct{}
+
+// WithRunArgs 将参数注入 context，供任务内通过 GetArg 读取。
+// 调用方在 RunTask 前调用此函数包装 ctx。
+func WithRunArgs(ctx context.Context, args map[string]string) context.Context {
+	return context.WithValue(ctx, runArgsKey{}, args)
+}
+
+// GetArg 从 context 中读取手动任务参数，未找到返回空字符串。
+// 任务函数内调用此方法获取 CLI 或 HTTP 接口传入的参数。
+func GetArg(ctx context.Context, key string) string {
+	args, _ := ctx.Value(runArgsKey{}).(map[string]string)
+	if args == nil {
+		return ""
+	}
+	return args[key]
 }

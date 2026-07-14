@@ -163,6 +163,8 @@ type KeyLimiter struct {
 
 	mu      sync.Mutex
 	buckets map[string]*bucket
+	done    chan struct{} // 关闭后停止后台清理 goroutine
+	closed  bool
 }
 
 // bucket 是 KeyLimiter 内部的带过期时间的令牌桶。
@@ -182,11 +184,10 @@ func NewKeyLimiter(rate, burst float64, ttl time.Duration) *KeyLimiter {
 		burst:   math.Ceil(burst),
 		ttl:     ttl,
 		buckets: make(map[string]*bucket),
+		done:    make(chan struct{}),
 	}
 
-	// 后台定期清理过期 key
 	go kl.cleanup()
-
 	return kl
 }
 
@@ -221,20 +222,35 @@ func (kl *KeyLimiter) getLimiter(key string) *Limiter {
 	return l
 }
 
-// cleanup 定期清理过期的 key。作为后台 goroutine 运行。
+// cleanup 定期清理过期的 key。作为后台 goroutine 运行，Close() 时停止。
 func (kl *KeyLimiter) cleanup() {
 	ticker := time.NewTicker(kl.ttl / 2)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		kl.mu.Lock()
-		now := time.Now()
-		for key, b := range kl.buckets {
-			if now.Sub(b.lastUsed) > kl.ttl {
-				delete(kl.buckets, key)
+	for {
+		select {
+		case <-kl.done:
+			return
+		case <-ticker.C:
+			kl.mu.Lock()
+			now := time.Now()
+			for key, b := range kl.buckets {
+				if now.Sub(b.lastUsed) > kl.ttl {
+					delete(kl.buckets, key)
+				}
 			}
+			kl.mu.Unlock()
 		}
-		kl.mu.Unlock()
+	}
+}
+
+// Close 停止后台清理 goroutine。多次调用安全。
+func (kl *KeyLimiter) Close() {
+	kl.mu.Lock()
+	defer kl.mu.Unlock()
+	if !kl.closed {
+		kl.closed = true
+		close(kl.done)
 	}
 }
 

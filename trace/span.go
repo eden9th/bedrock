@@ -2,6 +2,7 @@ package trace
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
@@ -73,26 +74,18 @@ func (s *Span) End() {
 
 	duration := time.Since(s.startTime)
 
-	// 构建简单的 JSON 输出
-	attrs := ""
-	for k, v := range s.attributes {
-		attrs += fmt.Sprintf(",%q:%q", k, v)
-	}
-	evts := ""
+	eventNames := make([]string, len(s.events))
 	for i, e := range s.events {
-		if i > 0 {
-			evts += ","
-		}
-		evts += fmt.Sprintf("%q", e.Name)
+		eventNames[i] = e.Name
 	}
 
-	fmt.Fprintf(os.Stderr,
-		`{"time":"%s","span":"%s","trace_id":"%s","duration_ms":%.2f,"attrs":{%s},"events":[%s]}`+"\n",
-		s.startTime.Format("2006/01/02-15:04:05.000"),
-		s.Name,
-		s.TraceID,
-		float64(duration.Microseconds())/1000.0,
-		attrs,
-		evts,
-	)
+	output, _ := json.Marshal(map[string]any{
+		"time":        s.startTime.Format("2006/01/02-15:04:05.000"),
+		"span":        s.Name,
+		"trace_id":    s.TraceID,
+		"duration_ms": float64(duration.Microseconds()) / 1000.0,
+		"attrs":       s.attributes,
+		"events":      eventNames,
+	})
+	fmt.Fprintln(os.Stderr, string(output))
 }
