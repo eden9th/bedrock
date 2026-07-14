@@ -26,9 +26,11 @@ package migrate
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -152,12 +154,40 @@ func executeMigration(ctx context.Context, db *sql.DB, version, sqlContent strin
 		return err
 	}
 
-	// 记录版本
+	// 记录版本，根据驱动类型选择占位符
+	// PostgreSQL 使用 $1/$2，MySQL/SQLite 使用 ?/?
 	now := time.Now().Format("2006-01-02 15:04:05")
-	insertSQL := fmt.Sprintf("INSERT INTO %s (version, executed_at) VALUES (?, ?)", migrationTable)
+	insertSQL := fmt.Sprintf(
+		"INSERT INTO %s (version, executed_at) VALUES (%s, %s)",
+		migrationTable,
+		placeholder(db, 1),
+		placeholder(db, 2),
+	)
 	if _, err := tx.ExecContext(ctx, insertSQL, version, now); err != nil {
 		return err
 	}
 
 	return tx.Commit()
+}
+
+// placeholder 根据数据库驱动类型返回对应的占位符。
+// PostgreSQL 返回 $n（如 $1、$2），其他驱动返回 ?。
+func placeholder(db *sql.DB, n int) string {
+	if isPostgres(db.Driver()) {
+		return fmt.Sprintf("$%d", n)
+	}
+	return "?"
+}
+
+// isPostgres 通过反射检查驱动类型名称，判断是否为 PostgreSQL 驱动。
+// 支持 lib/pq、pgx 等主流 PostgreSQL 驱动。
+func isPostgres(d driver.Driver) bool {
+	t := reflect.TypeOf(d)
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	name := strings.ToLower(t.PkgPath() + "." + t.Name())
+	return strings.Contains(name, "postgres") ||
+		strings.Contains(name, "pgx") ||
+		strings.Contains(name, "pq")
 }

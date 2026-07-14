@@ -4,6 +4,25 @@
 
 ---
 
+## [0.6.0] — 2026-07-14
+
+### Added
+
+- **errors** — 全新包：结构化业务错误（AppError），内置 CodeError / InvalidArgument / NotFound / Forbidden / Internal，HTTPStatus() 自动映射状态码，Wrap/Is/As 兼容标准库，零外部依赖
+- **cron** — 全新包：定时任务调度器，封装 robfig/cron/v3；Job 接口 + FuncJob；wrap() 统一注入 panic recover / PAUSED 开关 / 耗时+错误日志；Pause/Resume/RunTask/Entries；实现 lifecycle.Service 可直接接入 lifecycle.Manager
+- **httputil**: BindValidate[T]() — 基于 go-playground/validator/v10 的泛型 Bind+校验，失败自动返回 400/422 AppError
+
+### Fixed
+
+- **migrate**: executeMigration INSERT 占位符适配 PostgreSQL（`$1/$2`），其他驱动（MySQL/SQLite）继续使用 `?`，通过 driver 类型名反射自动检测
+
+### Dependencies
+
+- 新增 `github.com/go-playground/validator/v10 v10.22.1`
+- 新增 `github.com/robfig/cron/v3 v3.0.1`
+
+---
+
 ## [0.5.0] — 2026-07-14
 
 ### Added
