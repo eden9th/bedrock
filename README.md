@@ -19,13 +19,15 @@
 | **[bm](bm/)** | HTTP 框架 | 路由、Recovery、CORS、Logger、Timeout、pprof、优雅关闭 | 0 | [README](bm/README.md) |
 | **[circuitbreaker](circuitbreaker/)** | 熔断器 | 三态机（closed/open/half-open）、滑动窗口、自动恢复 | 0 | — |
 | **[conf](conf/)** | 配置管理 | TOML 加载、fsnotify 热更新、Setter 回调、环境变量覆盖、Validator 校验 | 2 (toml, fsnotify) | [README](conf/README.md) |
+| **[cron](cron/)** | 定时任务 | Job 接口、Scheduler（wrap/pause/resume）、RunTask 手动触发、lifecycle.Service | 1 (robfig/cron) | — |
 | **[db](db/)** | 数据库助手 | 结构体扫描、事务 helper、连接池配置、连接池指标自动注册 | 1 (monitor) | [README](db/README.md) |
 | **[duration](duration/)** | 配置 duration | TOML → time.Duration | 0 | [README](duration/README.md) |
+| **[errors](errors/)** | 结构化错误 | AppError、CodeError/InvalidArgument/NotFound/Forbidden/Internal、HTTPStatus()、Wrap/Is/As | 0 | — |
 | **[feature](feature/)** | 功能开关 | 布尔开关、百分比灰度、TOML/Map 双后端 | 1 (conf) | — |
-| **[httputil](httputil/)** | Handler 工具 | JSON 响应、请求体解析（含大小限制）、结构化校验 | 0 (bm) | [README](httputil/README.md) |
+| **[httputil](httputil/)** | Handler 工具 | JSON 响应、请求体解析（含大小限制）、结构化校验、BindValidate[T]（validator） | 1 (validator) | [README](httputil/README.md) |
 | **[lifecycle](lifecycle/)** | 生命周期 | 有序启停、信号驱动优雅关闭、Service 接口 | 0 | — |
 | **[log](log/)** | 结构化日志 | JSON 行输出、trace_id 关联、类型化 KV 字段、日志采样 | 1 (lumberjack) | [README](log/README.md) |
-| **[migrate](migrate/)** | 数据库迁移 | 按序号 SQL 文件执行、版本记录 | 1 (database/sql) | — |
+| **[migrate](migrate/)** | 数据库迁移 | 按序号 SQL 文件执行、版本记录、PostgreSQL/MySQL/SQLite 占位符自动适配 | 1 (database/sql) | — |
 | **[monitor](monitor/)** | 监控原语 | Counter/Gauge/Histogram、DefaultLabels、慢请求检测 | 0 | [README](monitor/README.md) |
 | **[pager](pager/)** | 内存分页 | 越界安全边界计算（尾页触底规范） | 0 | [README](pager/README.md) |
 | **[ratelimit](ratelimit/)** | 令牌桶限流 | Allow/Wait、KeyLimiter 多键分桶、TTL 清理、context 感知 | 0 | [README](ratelimit/README.md) |
