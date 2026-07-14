@@ -99,6 +99,18 @@ func main() {
 }
 ```
 
+## 优雅关闭选型说明
+
+Bedrock 提供三种优雅关闭方案，按场景选择：
+
+| 场景 | 推荐方案 | 超时 |
+|---|---|---|
+| 单 HTTP 服务，快速上手 | `bm.Engine.StartWithShutdown(addr)` | 30s |
+| 多服务（HTTP + cron + 自定义），需要统一编排 | `app.App`（`RegisterStop` + `Run`） | 10s/服务 |
+| 需要 `lifecycle.Service` 接口约束，组件化管理 | `lifecycle.Manager` | 10s/服务 |
+
+五分钟示例用的是 `bm.StartWithShutdown`（最简），生产多服务场景（如 demo 项目）用 `app.App`。
+
 ## 架构关系
 
 ```
@@ -153,6 +165,7 @@ func main() {
 4. `conf` → `duration`：TOML duration 字段自动解析
 5. `retry` + `circuitbreaker`：退避重试 + 熔断保护组合使用
 6. `lifecycle` → `bm` + `db`：统一管理所有组件的启停
+7. `feature`：通过 `Provider` 接口解耦，典型用法是调用方实现读取 `conf` 的 Provider
 
 ## 版本策略
 

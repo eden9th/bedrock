@@ -2,10 +2,10 @@
 package conf
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 
@@ -110,31 +110,42 @@ type Value struct {
 }
 
 // UnmarshalTOML 将配置文件内容解析到 v，环境变量自动覆盖。
-// 优先加载 TOML 文件，再用匹配的环境变量值覆盖。
+// 先解析 TOML 文件为 map，再将匹配前缀的环境变量 deep merge 进去，
+// env 值优先级高于文件值。
 func (v *Value) UnmarshalTOML(out any) error {
-	// 1. 读取 TOML 文件原始内容
+	// 1. 读取并解析 TOML 文件为 map
 	raw, err := os.ReadFile(v.path)
 	if err != nil {
 		return fmt.Errorf("conf: read %s: %w", v.path, err)
 	}
-
-	// 2. 追加环境变量覆盖行（后面的值覆盖前面的）
-	content := string(raw)
-	if envPrefix != "" {
-		content += envOverrideLines(envPrefix)
+	base := make(map[string]any)
+	if _, err := toml.Decode(string(raw), &base); err != nil {
+		return fmt.Errorf("conf: decode %s: %w", v.path, err)
 	}
 
-	// 3. 解析合并后的 TOML
-	if _, err := toml.Decode(content, out); err != nil {
-		return fmt.Errorf("conf: decode %s: %w", v.path, err)
+	// 2. 将环境变量展开为嵌套 map，deep merge 覆盖 base
+	if envPrefix != "" {
+		overlay := envOverlayMap(envPrefix)
+		deepMerge(base, overlay)
+	}
+
+	// 3. 将 merge 后的 map 重新编码为 TOML，再解析到 out
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(base); err != nil {
+		return fmt.Errorf("conf: re-encode %s: %w", v.path, err)
+	}
+	if _, err := toml.Decode(buf.String(), out); err != nil {
+		return fmt.Errorf("conf: final decode %s: %w", v.path, err)
 	}
 	return nil
 }
 
-// envOverrideLines 生成环境变量覆盖的 TOML 文本。
-// 例：APP_DB_MAX_OPEN="100" → db.max_open = 100
-func envOverrideLines(prefix string) string {
-	var lines []string
+// envOverlayMap 将匹配前缀的环境变量展开为嵌套 map。
+// 使用双下划线 __ 作为层级分隔符，单下划线保留在 key 内。
+// 例：APP_DB__MAX_OPEN=100 → {"db": {"max_open": "100"}}
+// 例：APP_NAME=foo → {"name": "foo"}
+func envOverlayMap(prefix string) map[string]any {
+	result := make(map[string]any)
 	for _, env := range os.Environ() {
 		kv := strings.SplitN(env, "=", 2)
 		if len(kv) != 2 {
@@ -144,50 +155,78 @@ func envOverrideLines(prefix string) string {
 		if !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		// APP_DB_MAX_OPEN → db.max_open
-		tomlKey := envToTOMLKey(key, prefix)
-		if tomlKey == "" {
+		// 去掉前缀，按 __ 分层，转小写
+		rest := strings.TrimPrefix(key, prefix)
+		if rest == "" {
 			continue
 		}
-		// 值需要 TOML 转义：字符串加引号，数字/布尔不加
-		lines = append(lines, fmt.Sprintf("%s = %s", tomlKey, tomlValue(val)))
+		parts := strings.Split(strings.ToLower(rest), "__")
+		setNested(result, parts, val)
 	}
-	// 排序保证输出稳定
-	sort.Strings(lines)
-	if len(lines) == 0 {
-		return ""
-	}
-	return "\n" + strings.Join(lines, "\n") + "\n"
+	return result
 }
 
-// envToTOMLKey 将环境变量名转为 TOML key。
-// APP_DB_MAX_OPEN → db.max_open
-func envToTOMLKey(key, prefix string) string {
-	rest := strings.TrimPrefix(key, prefix)
-	if rest == "" {
-		return ""
+// setNested 按 parts 路径在 m 中设置值，中间层自动创建 map。
+// val 会被自动转为合适的 Go 类型（bool/int64/float64/string），
+// 以确保 TOML re-encode 后类型与目标结构体兼容。
+func setNested(m map[string]any, parts []string, val string) {
+	if len(parts) == 1 {
+		m[parts[0]] = parseEnvVal(val)
+		return
 	}
-	return strings.ToLower(rest)
+	next, ok := m[parts[0]].(map[string]any)
+	if !ok {
+		next = make(map[string]any)
+	}
+	m[parts[0]] = next
+	setNested(next, parts[1:], val)
 }
 
-// tomlValue 将环境变量值转为 TOML 值文本。
-// 数字和布尔值不加引号，其余加双引号。
-func tomlValue(val string) string {
-	// 布尔值
+// parseEnvVal 将环境变量字符串值转为合适的 Go 类型。
+func parseEnvVal(val string) any {
 	lower := strings.ToLower(val)
-	if lower == "true" || lower == "false" {
-		return lower
+	if lower == "true" {
+		return true
 	}
-	// 整数或浮点数（简单判断）
-	if isNumeric(val) {
-		return val
+	if lower == "false" {
+		return false
 	}
-	// 默认为字符串
-	return fmt.Sprintf("%q", val)
+	// 尝试整数
+	if isInteger(val) {
+		var n int64
+		fmt.Sscan(val, &n)
+		return n
+	}
+	// 尝试浮点
+	if isFloat(val) {
+		var f float64
+		fmt.Sscan(val, &f)
+		return f
+	}
+	return val
 }
 
-func isNumeric(s string) bool {
-	if s == "" || s == "-" {
+func isInteger(s string) bool {
+	if s == "" {
+		return false
+	}
+	start := 0
+	if s[0] == '-' || s[0] == '+' {
+		start = 1
+	}
+	if start >= len(s) {
+		return false
+	}
+	for i := start; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isFloat(s string) bool {
+	if s == "" || s == "-" || s == "+" {
 		return false
 	}
 	start := 0
@@ -208,7 +247,39 @@ func isNumeric(s string) bool {
 			return false
 		}
 	}
-	return len(s) > start
+	return hasDot && len(s) > start
+}
+
+// deepMerge 将 src 的值递归 merge 到 dst，src 优先级更高。
+func deepMerge(dst, src map[string]any) {
+	for k, sv := range src {
+		dv, exists := dst[k]
+		if !exists {
+			dst[k] = sv
+			continue
+		}
+		// 双方都是 map 则递归 merge
+		dstMap, dstIsMap := dv.(map[string]any)
+		srcMap, srcIsMap := sv.(map[string]any)
+		if dstIsMap && srcIsMap {
+			deepMerge(dstMap, srcMap)
+			continue
+		}
+		// 否则 src 直接覆盖 dst
+		dst[k] = sv
+	}
+}
+
+// envToTOMLKey 将环境变量名转为 TOML key（保留，仅用于测试和文档说明）。
+// 使用双下划线 __ 作为层级分隔符：APP_DB__MAX_OPEN → db.max_open
+func envToTOMLKey(key, prefix string) string {
+	rest := strings.TrimPrefix(key, prefix)
+	if rest == "" {
+		return ""
+	}
+	// __ 表示层级（转为 .），_ 保留在 key 内
+	lower := strings.ToLower(rest)
+	return strings.ReplaceAll(lower, "__", ".")
 }
 
 // safeSet 调用 s.Set(raw)，捕获 panic 和错误，均输出到 stderr。
@@ -250,9 +321,17 @@ func watchLoop(w *fsnotify.Watcher) {
 			}
 			rawStr := string(raw)
 
-			// 追加环境变量覆盖
+			// 将环境变量 deep merge 后重新编码为 TOML 文本传给 Setter
 			if envPrefix != "" {
-				rawStr += envOverrideLines(envPrefix)
+				base := make(map[string]any)
+				if _, err := toml.Decode(rawStr, &base); err == nil {
+					overlay := envOverlayMap(envPrefix)
+					deepMerge(base, overlay)
+					var buf bytes.Buffer
+					if err := toml.NewEncoder(&buf).Encode(base); err == nil {
+						rawStr = buf.String()
+					}
+				}
 			}
 
 			for _, s := range setters {

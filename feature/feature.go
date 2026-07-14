@@ -12,13 +12,21 @@
 //
 // # 使用示例
 //
-//	// TOML 配置
+//	// TOML 配置（app.toml）
 //	[feature]
 //	new_checkout = true
 //	dark_mode = 0.1   # 10% 灰度
 //
-//	// 代码中使用
-//	feat := feature.New(feature.WithTOML(conf.Get("app.toml")))
+//	// 实现 Provider 接口，读取 TOML 配置
+//	type tomlProvider struct{ v *conf.Value }
+//	func (p *tomlProvider) Get(flag string) string {
+//	    var cfg struct{ Feature map[string]string `toml:"feature"` }
+//	    if err := p.v.UnmarshalTOML(&cfg); err != nil { return "" }
+//	    return cfg.Feature[flag]
+//	}
+//
+//	// 创建并使用
+//	feat := feature.New(&tomlProvider{v: conf.Get("app.toml")})
 //	if feat.Enabled("new_checkout") { ... }
 //	if feat.EnabledFor("dark_mode", uid) { ... }  // 基于 uid hash 的灰度
 //

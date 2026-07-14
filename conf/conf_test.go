@@ -145,3 +145,32 @@ func TestInit_InvalidDir(t *testing.T) {
 		t.Fatal("expected error for invalid dir, got nil")
 	}
 }
+
+// TestEnvOverride_NestedKey 验证 APP_DB__MAX_OPEN 能正确覆盖 TOML 中嵌套 key db.max_open。
+// 使用双下划线 __ 作为层级分隔符，单下划线保留在 key 内。
+func TestEnvOverride_NestedKey(t *testing.T) {
+	dir := t.TempDir()
+	toml := "[db]\nmax_open = 10\n"
+	if err := os.WriteFile(filepath.Join(dir, "app.toml"), []byte(toml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("APP_DB__MAX_OPEN", "99")
+
+	if err := conf.Init(dir, conf.WithEnvPrefix("APP_")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(conf.Close)
+
+	var cfg struct {
+		DB struct {
+			MaxOpen int `toml:"max_open"`
+		} `toml:"db"`
+	}
+	if err := conf.Get("app.toml").UnmarshalTOML(&cfg); err != nil {
+		t.Fatalf("UnmarshalTOML failed: %v", err)
+	}
+	if cfg.DB.MaxOpen != 99 {
+		t.Errorf("expected db.max_open=99 after env override, got %d", cfg.DB.MaxOpen)
+	}
+}
